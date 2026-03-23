@@ -1,0 +1,20 @@
+services:
+  backend:
+    container_name: mediguard_api
+    restart: unless-stopped
+    build:
+      context: ./mediguard-backend
+      dockerfile: Dockerfile
+    ports:
+      - 9673:8000
+    volumes:
+      - ./mediguard-backend:/code
+    env_file:
+      - ./mediguard-backend/.env  
+    networks:
+      - playground
+
+networks:
+  playground:
+    name: playground
+    driver: bridge
