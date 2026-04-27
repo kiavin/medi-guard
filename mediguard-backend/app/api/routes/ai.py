@@ -9,7 +9,12 @@ from app.schemas.consultation import PredictionResponse
 from app.schemas.base_response import APIResponse, send_success
 from app.services.ai_service import generate_clinical_prediction
 from typing import List
-router = APIRouter(prefix="/ai", tags=["AI Diagnostics"])
+
+router = APIRouter(
+    prefix="/ai",
+    tags=["AI Diagnostics"],
+    dependencies=[Depends(get_current_active_user)]
+)
 
 @router.post("/predict/{consultation_id}", response_model=APIResponse[PredictionResponse], status_code=status.HTTP_201_CREATED)
 def run_ai_diagnostics(

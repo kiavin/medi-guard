@@ -7,17 +7,17 @@ from app.models.user import User
 from app.schemas.user import UserResponse, UserUpdate
 from app.schemas.base_response import APIResponse, send_success
 
-router = APIRouter(prefix="/users", tags=["User Management"])
+router = APIRouter(
+    prefix="/users",
+    tags=["User Management"],
+    dependencies=[Depends(get_current_active_user)]
+)
 
 # Admin Only Dependency
 allow_admin = RoleChecker(["admin"])
 
 @router.get("/me", response_model=APIResponse[UserResponse])
 def read_user_me(current_user: User = Depends(get_current_active_user)):
-    """
-    Get the profile of the currently logged-in user.
-    Any active user (admin, clinician, etc.) can use this.
-    """
     return send_success(data=current_user)
 
 @router.get("/", response_model=APIResponse[List[UserResponse]])
@@ -27,9 +27,6 @@ def read_all_users(
     db: Session = Depends(get_db),
     current_admin: User = Depends(allow_admin)
 ):
-    """
-    List all users in the system. (Admins only)
-    """
     users = db.query(User).offset(skip).limit(limit).all()
     return send_success(data=users)
 
@@ -39,13 +36,9 @@ def read_user_by_id(
     db: Session = Depends(get_db),
     current_admin: User = Depends(allow_admin)
 ):
-    """
-    Get a specific user's details by their ID. (Admins only)
-    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-        
     return send_success(data=user)
 
 @router.put("/{user_id}", response_model=APIResponse[UserResponse])
@@ -55,15 +48,19 @@ def update_user(
     db: Session = Depends(get_db),
     current_admin: User = Depends(allow_admin)
 ):
-    """
-    Update a user's role, active status, or lock status. (Admins only)
-    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Update only the fields that were provided in the request
     update_data = user_in.model_dump(exclude_unset=True)
+    
+    # Auto-sync security fields if the admin changes the UI 'status' string
+    if "status" in update_data:
+        if update_data["status"] in ["suspended", "disabled"]:
+            user.is_active = False
+        elif update_data["status"] == "active":
+            user.is_active = True
+
     for key, value in update_data.items():
         setattr(user, key, value)
         
@@ -81,17 +78,14 @@ def update_user(
 def enable_user(
     user_id: str, 
     db: Session = Depends(get_db),
-    current_admin: User = Depends(allow_admin) # Admin only!
+    current_admin: User = Depends(allow_admin)
 ):
-    """
-    Re-enables a disabled staff account and completely clears any 
-    failed login attempts or temporary security locks.
-    """
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status_code=404, detail="User not found.")
         
-    # Restore access and wipe all penalty flags
+    # Restore access and sync the UI status
+    user.status = "active"
     user.is_active = True
     user.is_locked = False
     user.locked_until = None
@@ -102,7 +96,35 @@ def enable_user(
     
     return send_success(
         data=user,
-        message=f"Staff account for {user.username} has been fully restored and unlocked.",
+        message=f"Staff account for {user.first_name or user.username} has been fully restored and unlocked.",
         theme="success",
+        alert_type="toast"
+    )
+
+# --- NEW: Quick Suspend Route ---
+@router.put("/{user_id}/disable", response_model=APIResponse[UserResponse])
+def disable_user(
+    user_id: str, 
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(allow_admin)
+):
+    """
+    Instantly revokes login access and marks the account as disabled.
+    """
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+        
+    # Disable the user
+    user.status = "disabled"
+    user.is_active = False
+    
+    db.commit()
+    db.refresh(user)
+    
+    return send_success(
+        data=user,
+        message=f"Staff account for {user.first_name or user.username} has been disabled.",
+        theme="danger",
         alert_type="toast"
     )

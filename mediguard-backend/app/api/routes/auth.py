@@ -10,7 +10,7 @@ from app.api.dependencies import get_db, get_current_active_user, RoleChecker
 from app.core.security import verify_password, get_password_hash, create_access_token, create_action_token, SECRET_KEY, ALGORITHM
 from app.models.user import User
 from app.schemas.user import UserCreate, UserResponse
-from app.schemas.auth import Token, PasswordResetRequest, PasswordResetConfirm, LoginRequest
+from app.schemas.auth import Token, PasswordResetRequest, PasswordResetConfirm, LoginRequest, RefreshTokenRequest
 from app.schemas.base_response import APIResponse, send_success
 from app.models.user import TokenBlocklist
 
@@ -99,17 +99,18 @@ def login(login_data: LoginRequest, db: Session = Depends(get_db)):
                         alert_type="toast")
 
 @router.post("/refresh", response_model=APIResponse[Token])
-def refresh_access_token(refresh_token: str, db: Session = Depends(get_db)):
+def refresh_access_token(payload: RefreshTokenRequest, db: Session = Depends(get_db)):
     """Use a valid refresh_token to get a new access_token without logging in again."""
     try:
         # Decode the refresh token
-        payload = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
+        refresh_token = payload.refresh_token
+        payload_data = jwt.decode(refresh_token, SECRET_KEY, algorithms=[ALGORITHM])
         
         # Verify it's actually a refresh token
-        if payload.get("type") != "refresh":
+        if payload_data.get("type") != "refresh":
             raise HTTPException(status_code=401, detail="Invalid token type")
             
-        user_id: str = payload.get("sub")
+        user_id: str = payload_data.get("sub")
         if user_id is None:
             raise HTTPException(status_code=401, detail="Invalid token payload")
             

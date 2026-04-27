@@ -30,6 +30,7 @@ class LabRequest(Base, AuditMixin):
     reference_range = Column(String, nullable=True)
     flag = Column(String, nullable=True) 
     notes = Column(Text, nullable=True)
+    ai_interpretation = Column(Text, nullable=True)
 
     # Specific Lab Timestamps
     ordered_at = Column(DateTime, default=datetime.utcnow)

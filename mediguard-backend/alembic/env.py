@@ -6,10 +6,8 @@ import os
 
 # 1. Import your SQLAlchemy Base and Models
 from app.core.database import Base
-from app.models.patient import Patient
-from app.models.consultation import Consultation
-from app.models.user import User
-from app.models.medication import Medication, MedicationInteraction
+# Importing from app.models ensures all models are registered for autogenerate
+from app.models import *
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -27,8 +25,6 @@ if config.config_file_name is not None:
 
 # 3. Set target_metadata to your Base metadata
 target_metadata = Base.metadata
-
-# ... (Leave the rest of the env.py file exactly as it is) ...
 
 
 def run_migrations_offline() -> None:

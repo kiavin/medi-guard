@@ -20,10 +20,11 @@ class Consultation(Base, AuditMixin):
     
     # Clinical Data
     chief_complaint = Column(Text, nullable=False)
-    clinical_notes = Column(Text, nullable=True)
+    clinical_notes = Column(Text, nullable=False)
     final_diagnosis = Column(String(255), nullable=True)
-    treatment_plan = Column(Text, nullable=True)
-    status = Column(String, default="open") # "open", "amended", "closed"
+    treatment_plan = Column(Text, nullable=True) # Also used for closing_notes
+    patient_instructions = Column(Text, nullable=True)
+    status = Column(String(20), default="ongoing") # "ongoing", "closed"
     
     lab_results = Column(JSON, default=list)
     
@@ -36,7 +37,11 @@ class Consultation(Base, AuditMixin):
     # Metadata
     consultation_date = Column(DateTime, default=datetime.utcnow)
     follow_up_date = Column(Date, nullable=True)
-    status = Column(String(20), default="open") # open, completed, cancelled
+    follow_up_interval = Column(String(100), nullable=True)
+
+    # --- NEW COLUMN FOR AI WORKFLOW ---
+    # Stores the SHA-256 hash to prevent redundant AI calls if symptoms haven't changed
+    last_symptoms_hash = Column(String(64), nullable=True) 
 
     # Relationships (Using string names avoids circular imports!)
     patient = relationship("Patient", back_populates="consultations")
@@ -49,12 +54,14 @@ class Consultation(Base, AuditMixin):
         order_by="desc(Prediction.created_at)" 
     )
     medications = relationship("Medication", back_populates="consultation", cascade="all, delete-orphan") 
+    lab_requests = relationship("LabRequest", back_populates="consultation", cascade="all, delete-orphan")
+
 
 # ==========================================
 # 2. SYMPTOMS TABLE
 # ==========================================
 
-class Symptom(Base, AuditMixin): # Assuming you are using your AuditMixin
+class Symptom(Base, AuditMixin): 
     __tablename__ = "symptoms"
     
     id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()))
@@ -63,28 +70,27 @@ class Symptom(Base, AuditMixin): # Assuming you are using your AuditMixin
     # Updated column names to match the frontend JSON exactly
     name = Column(String, nullable=False)
     severity = Column(String, nullable=False)
-    duration = Column(String, nullable=True) # Changed to String to safely accept "2" or "2 days"
+    duration = Column(String, nullable=True) 
     
     # Relationship back to consultation
     consultation = relationship("Consultation", back_populates="symptoms")
+
+
 # ==========================================
 # 3. PREDICTIONS TABLE (AI Results)
 # ==========================================
 class Prediction(Base, AuditMixin):
     __tablename__ = "predictions"
 
-    # unique=True enforces a 1-to-1 relationship (one prediction per consultation)
     consultation_id = Column(String(36), ForeignKey("consultations.id", ondelete="CASCADE"), nullable=False)
     
     primary_disease = Column(String(255), nullable=False)
-    primary_confidence = Column(Numeric(5, 4), nullable=False) # e.g. 0.8750
-    differentials = Column(JSONB, nullable=True) # Stores the alternative predictions
-    recommended_tests = Column(JSONB, nullable=True) # Stores suggested labs
+    primary_confidence = Column(Numeric(5, 4), nullable=False) 
+    differentials = Column(JSONB, nullable=True) 
+    recommended_tests = Column(JSONB, nullable=True) 
     model_used = Column(String(100), nullable=False)
-    raw_response = Column(JSONB, nullable=False) # Keep the raw Gemini API response for auditing
+    raw_response = Column(JSONB, nullable=False) 
     was_confirmed = Column(Boolean, nullable=True)
 
     # Relationship back to the parent consultation
     consultation = relationship("Consultation", back_populates="predictions")
-    lab_requests = relationship("LabRequest", back_populates="consultation")
-    lab_requests = relationship("LabRequest", back_populates="consultation", cascade="all, delete-orphan")

@@ -1,7 +1,9 @@
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, status, Query as FastAPIQuery
 from fastapi.security import OAuth2PasswordBearer
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, Query
+from sqlalchemy import or_, asc, desc
 import jwt
+from typing import Optional, Any, Type, List
 from app.core.security import SECRET_KEY, ALGORITHM
 from app.core.database import SessionLocal
 from app.models.user import User
@@ -59,3 +61,71 @@ class RoleChecker:
         if user.role not in self.allowed_roles:
             raise HTTPException(status_code=403, detail="Operation not permitted for your role")
         return user
+
+# Global Pagination, Search, and Sorting
+class QueryParams:
+    def __init__(
+        self,
+        page: int = FastAPIQuery(1, ge=1),
+        size: int = FastAPIQuery(20, ge=1, le=100, alias="per-page"),
+        search: Optional[str] = None,
+        sort_by: Optional[str] = None,
+        order: str = FastAPIQuery("desc", pattern="^(asc|desc)$")
+    ):
+        self.page = page
+        self.size = size
+        self.search = search
+        self.sort_by = sort_by
+        self.sort_desc = order == "desc"
+
+def apply_filters_and_paginate(
+    query: Query,
+    model: Type[Any],
+    params: QueryParams,
+    search_columns: List[str] = None
+) -> dict:
+    """
+    Applies SQLAlchemy ilike() filtering, dynamic sorting, and pagination.
+    Returns a dictionary with 'items' and 'meta'.
+    """
+    # 1. Search Filtering
+    if params.search and search_columns:
+        search_filters = []
+        for col_name in search_columns:
+            column = getattr(model, col_name, None)
+            if column is not None:
+                search_filters.append(column.ilike(f"%{params.search}%"))
+        
+        if search_filters:
+            query = query.filter(or_(*search_filters))
+
+    # 2. Total Count (before pagination)
+    total_items = query.count()
+
+    # 3. Dynamic Sorting
+    if params.sort_by:
+        sort_column = getattr(model, params.sort_by, None)
+        if sort_column is not None:
+            order_func = desc if params.sort_desc else asc
+            query = query.order_by(order_func(sort_column))
+    else:
+        # Default sort by created_at desc if it exists
+        if hasattr(model, "created_at"):
+            query = query.order_by(desc(model.created_at))
+
+    # 4. Pagination
+    offset = (params.page - 1) * params.size
+    items = query.offset(offset).limit(params.size).all()
+
+    # 5. Build Metadata
+    total_pages = (total_items + params.size - 1) // params.size if total_items > 0 else 0
+
+    return {
+        "items": items,
+        "meta": {
+            "total": total_items,
+            "page": params.page,
+            "size": params.size,
+            "pages": total_pages
+        }
+    }

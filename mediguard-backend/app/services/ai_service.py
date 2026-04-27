@@ -1,23 +1,88 @@
 import os
 import json
-import google.generativeai as genai
+import requests
+import logging
 
-# Configure the API key
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+logger = logging.getLogger(__name__)
+
+# Configure the Local LLM Endpoint
+# Grabs the URL from the docker-compose environment variable we set earlier
+OLLAMA_API_URL = os.getenv("LLM_API_URL", "http://cdss-llm:11434/api/generate")
+MODEL_NAME = "llama3"
+
 
 def generate_clinical_prediction(consultation, patient, symptoms):
     """
-    Takes structured clinical data, engineers a prompt, and calls Gemini.
+    Optimized for speed with local Llama 3 model.
     """
-    # 1. Format the symptoms into a readable string (using the updated attributes)
+    # 1. Format symptoms concisely
     symptoms_text = ", ".join(
-        [f"{s.name} (Severity: {s.severity}, Duration: {s.duration})" for s in symptoms]
+        [f"{s.name} ({s.severity}/{s.duration})" for s in symptoms]
     )
 
-    # 2. Build the clinical prompt
+    # 2. SHORTER, more focused prompt (less tokens = faster inference)
+    prompt = f"""You are a Clinical Decision Support AI. Analyze and return ONLY valid JSON.
+
+PATIENT: {patient.gender}, DOB: {patient.date_of_birth}
+Allergies: {patient.known_allergies or 'None'}
+Conditions: {patient.chronic_conditions or 'None'}
+
+VITALS: BP {consultation.bp_systolic}/{consultation.bp_diastolic}, HR {consultation.heart_rate}, Temp {consultation.temperature}
+
+CHIEF COMPLAINT: {consultation.chief_complaint}
+SYMPTOMS: {symptoms_text}
+
+Return JSON:
+{{
+  "primary_disease": "Most likely diagnosis",
+  "primary_confidence": 0.95,
+  "reasoning": "Brief clinical reasoning",
+  "confirmatory_symptoms": ["symptom1", "symptom2"],
+  "prescribing_alerts": ["alert if any"],
+  "differentials": [{{"disease": "Alternative", "reasoning": "Why"}}],
+  "recommended_tests": ["test1", "test2"]
+}}"""
+
+    # 3. Optimized payload
+    payload = {
+        "model": MODEL_NAME,
+        "prompt": prompt,
+        "stream": False,
+        "format": "json",
+        "options": {
+            # Removed num_thread - controlled by environment variable now
+            "num_ctx": 4096,  # Reduced from 8192 - faster with q4_0 cache
+            "num_predict": 512,  # Reduced from 1024 - your JSON won't be that long
+            "temperature": 0.1,  # Lower = more deterministic = faster
+            "top_p": 0.9,
+            "repeat_penalty": 1.1,
+        },
+    }
+
+    try:
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=120)
+        response.raise_for_status()
+        result_data = response.json()
+        model_output_string = result_data.get("response", "")
+        return json.loads(model_output_string)
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to connect to local LLM: {e}")
+        raise RuntimeError(
+            "AI Inference Engine is currently unreachable. Please check the Docker container."
+        )
+    except json.JSONDecodeError:
+        logger.error(f"Model failed to return valid JSON: {model_output_string}")
+        raise ValueError("AI failed to return valid JSON.")
+
+
+def generate_lab_interpretation(patient, lab_request):
+    """
+    Generates a brief AI Lab Interpretation string based on the result.
+    """
     prompt = f"""
-    You are an expert Clinical Decision Support System (CDSS) AI assistant. 
-    Analyze the following patient data and provide a differential diagnosis.
+    You are an expert clinical laboratory specialist AI. 
+    Analyze the following lab test result for this patient and provide a brief interpretation.
     
     PATIENT PROFILE:
     - Age/DOB: {patient.date_of_birth}
@@ -25,44 +90,33 @@ def generate_clinical_prediction(consultation, patient, symptoms):
     - Known Allergies: {patient.known_allergies}
     - Chronic Conditions: {patient.chronic_conditions}
     
-    CONSULTATION DETAILS:
-    - Chief Complaint: {consultation.chief_complaint}
-    - Clinical Notes: {consultation.clinical_notes or "None"}
-    
-    VITALS:
-    - BP: {consultation.bp_systolic}/{consultation.bp_diastolic}
-    - Heart Rate: {consultation.heart_rate}
-    - Temp: {consultation.temperature}
-    
-    REPORTED SYMPTOMS:
-    {symptoms_text}
+    LAB TEST DETAILS:
+    - Test Name: {lab_request.test_name}
+    - Result: {lab_request.result_value}
+    - Reference Range: {lab_request.reference_range or "Not provided"}
+    - Flag: {lab_request.flag or "Normal"}
+    - Notes: {lab_request.notes or "None"}
     
     INSTRUCTIONS:
-    Analyze the data and return a STRICT JSON object matching this exact schema:
-    {{
-        "primary_disease": "Name of the most likely condition",
-        "primary_confidence": 0.95, // Float between 0.0 and 1.0
-        "reasoning": "General clinical reasoning explaining why this primary disease is the most likely conclusion based on the vitals, symptoms, and history.",
-        "confirmatory_symptoms": ["Symptom to ask about 1", "Physical exam check 2"],
-        "prescribing_alerts": ["Warning: Do not prescribe X due to Allergy Y", "Note: Patient has asthma, avoid Z"],
-        "differentials": [
-            {{"disease": "Alternative 1", "reasoning": "Why it might be this..."}},
-            {{"disease": "Alternative 2", "reasoning": "..."}}
-        ],
-        "recommended_tests": ["Complete Blood Count (CBC)", "Chest X-Ray"]
-    }}
+    Provide a concise (1-3 sentences) clinical interpretation of this result.
+    Highlight if the result is critical or concerning given the patient's history.
+    Return ONLY the interpretation string.
     """
 
-    # 3. Call the Gemini Model
-    model = genai.GenerativeModel(
-        model_name="gemini-2.5-flash",
-        generation_config={"response_mime_type": "application/json"} # Forces valid JSON output
-    )
-    
-    response = model.generate_content(prompt)
-    
-    # 4. Parse and return the JSON dictionary
+    payload = {
+        "model": MODEL_NAME,
+        "prompt": prompt,
+        "stream": False,
+        # Notice we omit "format": "json" here because we just want a standard text string back
+    }
+
     try:
-        return json.loads(response.text)
-    except json.JSONDecodeError:
-        raise ValueError("AI failed to return valid JSON.")
+        response = requests.post(OLLAMA_API_URL, json=payload, timeout=30)
+        response.raise_for_status()
+
+        result_data = response.json()
+        return result_data.get("response", "").strip()
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to connect to local LLM for lab interpretation: {e}")
+        return "AI interpretation currently unavailable due to engine offline."

@@ -16,8 +16,13 @@ class Medication(Base, AuditMixin):
     
     drug_name = Column(String(200), nullable=False)
     dosage = Column(String(100), nullable=False)
+    
+    # NEW: Added route and notes to match the frontend PrescriptionInput payload
+    route = Column(String(50), nullable=True) 
     frequency = Column(String(100), nullable=False)
     duration_days = Column(Integer, nullable=False)
+    notes = Column(Text, nullable=True)
+    
     prescribed_date = Column(Date, nullable=False)
 
     # Relationships

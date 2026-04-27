@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import List, Optional
 from datetime import date, datetime
 from app.schemas.consultation import ConsultationResponse
@@ -8,12 +8,17 @@ class PatientBase(BaseModel):
     first_name: str = Field(..., min_length=2, max_length=100)
     last_name: str = Field(..., min_length=2, max_length=100)
     date_of_birth: date
-    gender: str = Field(..., pattern="^(Male|Female|Other)$")
+    gender: str = Field(..., pattern="^(Male|Female|Other|male|female|other)$")
     national_id: str = Field(..., min_length=5, max_length=50)
     phone_number: str = Field(..., min_length=9, max_length=20)
     blood_type: Optional[str] = None
     known_allergies: List[str] = []
     chronic_conditions: List[str] = []
+
+    @field_validator("gender")
+    @classmethod
+    def normalize_gender(cls, v: str) -> str:
+        return v.capitalize()
 
 class PatientCreate(PatientBase):
     pass
@@ -65,3 +70,18 @@ class PatientConsultationSummaryResponse(BaseModel):
     ward: str = "Outpatient" # Default value for the UI
     known_allergies: List[str] = []
     clinical_summary: ClinicalSummary
+
+class MedicationHistoryItem(BaseModel):
+    id: str
+    drug_name: str
+    dosage: Optional[str]=""
+    route: Optional[str]=""
+    frequency: Optional[str] = ""
+    duration_days: int
+    notes: Optional[str] = ""
+    prescribed_date: date
+    consultation_id: str
+    prescribing_clinician_id: str
+
+    class Config:
+        from_attributes = True

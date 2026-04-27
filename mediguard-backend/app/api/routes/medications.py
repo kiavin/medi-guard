@@ -4,12 +4,18 @@ from typing import List
 from sqlalchemy import or_, and_
 
 from app.api.dependencies import get_db, get_current_active_user, RoleChecker
+from app.models.consultation import Consultation
 from app.models.medication import Medication, MedicationInteraction
+from app.models.patient import Patient
 from app.models.user import User
-from app.schemas.medication import MedicationCreate, MedicationResponse, InteractionCreate, InteractionResponse
+from app.schemas.medication import MedicationCreate, MedicationResponse, InteractionCreate, InteractionResponse, InteractionCheckRequest
 from app.schemas.base_response import APIResponse, send_success
 
-router = APIRouter(prefix="/medications", tags=["Medications"])
+router = APIRouter(
+    prefix="/medications",
+    tags=["Medications"],
+    dependencies=[Depends(get_current_active_user)]
+)
 
 @router.post("/prescribe", response_model=APIResponse[MedicationResponse], status_code=status.HTTP_201_CREATED)
 def prescribe_medication(
@@ -18,6 +24,13 @@ def prescribe_medication(
     current_user: User = Depends(get_current_active_user)
 ):
     """Prescribe a medication to a patient under a specific consultation."""
+    
+    consultation = db.query(Consultation).filter(Consultation.id == med_in.consultation_id).first()
+    if not consultation:
+        raise HTTPException(status_code=404, detail="Consultation not found")
+    if consultation.status == "closed":
+        raise HTTPException(status_code=403, detail="Cannot modify a closed, immutable consultation record")
+        
     
     # SAFETY CHECK: Check if the patient is already taking a conflicting drug
     active_meds = db.query(Medication).filter(Medication.patient_id == med_in.patient_id).all()
@@ -62,7 +75,7 @@ def get_patient_medications(patient_id: str, db: Session = Depends(get_db), curr
 # --- INTERACTION RULE MANAGEMENT (Admin Only) ---
 allow_admin = RoleChecker(["admin"])
 
-@router.post("/interactions", response_model=APIResponse[InteractionResponse], status_code=status.HTTP_201_CREATED)
+@router.post("/interactions/rule", response_model=APIResponse[InteractionResponse], status_code=status.HTTP_201_CREATED)
 def add_interaction_rule(
     rule_in: InteractionCreate, 
     db: Session = Depends(get_db),
@@ -79,4 +92,90 @@ def add_interaction_rule(
         message="Interaction rule added successfully.",
         theme="success",
         alert_type="alert"
+    )
+
+# ==========================================
+# STEP 3: SAFETY CHECK (DRUGS vs ALLERGIES/CONDITIONS)
+# ==========================================
+@router.post("/interactions", response_model=dict)
+def check_medication_safety(
+    payload: InteractionCheckRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
+    """
+    Cross-references a list of drugs against:
+    1. Each other (Drug-Drug interactions)
+    2. Patient's known allergies
+    3. Patient's chronic conditions
+    """
+    patient = db.query(Patient).filter(Patient.id == payload.patient_id).first()
+    if not patient:
+        raise HTTPException(status_code=404, detail="Patient not found")
+
+    warnings = []
+    
+    # 1. Drug-Drug Interactions (Internal list)
+    for i in range(len(payload.drugs)):
+        for j in range(i + 1, len(payload.drugs)):
+            drug_a = payload.drugs[i]
+            drug_b = payload.drugs[j]
+            
+            interaction = db.query(MedicationInteraction).filter(
+                or_(
+                    and_(MedicationInteraction.drug_a == drug_a, MedicationInteraction.drug_b == drug_b),
+                    and_(MedicationInteraction.drug_a == drug_b, MedicationInteraction.drug_b == drug_a)
+                )
+            ).first()
+            
+            if interaction:
+                warnings.append({
+                    "type": "drug-drug",
+                    "severity": interaction.severity,
+                    "title": f"Interaction: {drug_a} & {drug_b}",
+                    "message": interaction.effect,
+                    "recommendation": interaction.recommendation
+                })
+
+    # 2. Drug-Allergy Checks (Simple substring match for now)
+    allergies = patient.known_allergies or []
+    for drug in payload.drugs:
+        for allergy in allergies:
+            if allergy.lower() in drug.lower() or drug.lower() in allergy.lower():
+                warnings.append({
+                    "type": "allergy",
+                    "severity": "critical",
+                    "title": f"Allergy Alert: {drug}",
+                    "message": f"Patient is allergic to '{allergy}', which may conflict with {drug}.",
+                    "recommendation": "Do not prescribe. Select alternative class."
+                })
+
+    # 3. Drug-Condition Checks (Mock logic - usually needs a mapping table)
+    # For now, we'll flag common contraindications
+    chronic_conditions = patient.chronic_conditions or []
+    contraindications = {
+        "Asthma": ["Beta-blockers", "NSAIDs", "Aspirin"],
+        "Diabetes": ["Corticosteroids"],
+        "Renal Failure": ["Metformin", "NSAIDs"],
+        "Hypertension": ["Decongestants"]
+    }
+    
+    for condition in chronic_conditions:
+        if condition in contraindications:
+            for drug in payload.drugs:
+                for bad_drug in contraindications[condition]:
+                    if bad_drug.lower() in drug.lower():
+                        warnings.append({
+                            "type": "condition",
+                            "severity": "high",
+                            "title": f"Condition Conflict: {condition}",
+                            "message": f"{drug} is often contraindicated for patients with {condition}.",
+                            "recommendation": "Verify patient stability and consider alternative."
+                        })
+
+    return send_success(
+        data={
+            "warnings": warnings,
+            "is_safe": len([w for w in warnings if w['severity'] in ['critical', 'high']]) == 0
+        }
     )

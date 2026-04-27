@@ -1,14 +1,18 @@
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
+from typing import Optional, List
 from datetime import date, datetime
 
 # ==========================================
 # MEDICATION SCHEMAS
 # ==========================================
 class MedicationBase(BaseModel):
-    drug_name: str = Field(..., min_length=2, max_length=200)
-    dosage: str = Field(..., min_length=1, max_length=100)
-    frequency: str = Field(..., min_length=1, max_length=100)
+    dosage: Optional[str] = ""
+    
+    # NEW: Added route and notes to match the frontend payload and updated DB model
+    route: Optional[str] = None
+    notes: Optional[str] = None
+    
+    frequency: Optional[str] = ""
     duration_days: int = Field(..., gt=0, le=365)
     prescribed_date: date
 
@@ -40,3 +44,7 @@ class InteractionCreate(InteractionBase):
 class InteractionResponse(InteractionBase):
     id: str
     model_config = ConfigDict(from_attributes=True)
+
+class InteractionCheckRequest(BaseModel):
+    patient_id: str
+    drugs: List[str]
